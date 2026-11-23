@@ -6,7 +6,8 @@ import threading
 
 from flask import Flask, jsonify, render_template, request
 
-from .examples import EXAMPLES
+from .examples import EXAMPLES, PRUNING_EXAMPLES
+from .pruning import prune_tree, validate_samples_payload
 from .solver import run_trial
 from .store import Store
 from .tree import classify, validate_tree_full
@@ -41,6 +42,10 @@ def create_app(data_file=None):
     @app.get("/api/examples")
     def get_examples():
         return jsonify({"ok": True, "examples": EXAMPLES})
+
+    @app.get("/api/pruning-examples")
+    def get_pruning_examples():
+        return jsonify({"ok": True, "examples": PRUNING_EXAMPLES})
 
     # ---------------- 原树 ----------------
     @app.post("/api/original-tree")
@@ -163,6 +168,85 @@ def create_app(data_file=None):
 
         revision, confirmation = store.confirm(job)
         return jsonify({"ok": True, "revision": revision, "confirmation": confirmation})
+
+    # ---------------- 候选树剪枝（后台线程，不阻塞草稿保存）----------------
+    @app.post("/api/pruning")
+    def create_pruning():
+        payload = request.get_json(silent=True)
+        try:
+            max_leaves, samples = validate_samples_payload(payload)
+        except ValueError as exc:
+            return error(f"剪枝参数校验失败：{exc}")
+
+        state = store.get_state()
+        if state["candidate_tree"] is None:
+            return error("请先保存候选树，再发起剪枝", 409)
+
+        revision = state["revision"]
+        # 与温区试算相同的快照机制：任务只针对发起时的候选树版本，
+        # 完成后以 revision 是否仍为当前版本决定能否替换草稿。
+        snapshot = {
+            "candidate_tree": json.loads(json.dumps(state["candidate_tree"])),
+        }
+        job = store.create_pruning_job(snapshot, revision, max_leaves, samples)
+
+        def worker():
+            store.update_pruning_job(job["id"], status="running")
+            try:
+                if store.pruning_gate is not None:  # 仅测试使用的同步钩子
+                    if store.pruning_entered is not None:
+                        store.pruning_entered.set()
+                    store.pruning_gate.wait(timeout=5)
+                result = prune_tree(
+                    snapshot["candidate_tree"], max_leaves,
+                    json.loads(json.dumps(samples)),
+                )
+                # 原子收尾：写结果，并仅在启动版号仍有效时替换草稿候选树；
+                # 版号变化、无解时保留最新草稿，原因记录在任务上。
+                store.finish_pruning_job(job["id"], result)
+            except Exception as exc:  # 计算失败：记录原因，保留最新草稿
+                store.fail_pruning_job(job["id"], str(exc))
+
+        thread = threading.Thread(target=worker, daemon=True)
+        store.register_pruning_thread(thread)
+        thread.start()
+        return jsonify({
+            "ok": True,
+            "job_id": job["id"],
+            "revision": revision,
+            "max_leaves": max_leaves,
+            "sample_count": len(samples),
+        }), 201
+
+    @app.get("/api/pruning/<job_id>")
+    def get_pruning(job_id):
+        job = store.get_pruning_job(job_id)
+        if job is None:
+            return error("剪枝任务不存在", 404)
+        current_revision = store.get_revision()
+        return jsonify({
+            "ok": True,
+            "job": {
+                "id": job["id"],
+                "status": job["status"],
+                "revision": job["revision"],
+                "stale": job["revision"] != current_revision,
+                "current_revision": current_revision,
+                "max_leaves": job["max_leaves"],
+                "sample_count": len(job["samples"]),
+                "result": job["result"],
+                "error": job["error"],
+                "applied": job["applied"],
+                "superseded": (
+                    job["status"] == "solved" and not job["applied"]
+                    and job["finished_at"] is not None
+                ),
+                "apply_revision": job["apply_revision"],
+                "apply_reason": job["apply_reason"],
+                "created_at": job["created_at"],
+                "finished_at": job["finished_at"],
+            },
+        })
 
     # ---------------- 读数分流查询 ----------------
     @app.post("/api/classify")

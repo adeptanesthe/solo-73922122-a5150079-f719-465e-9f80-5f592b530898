@@ -21,8 +21,11 @@
 
 <main>
   <section class="card" id="examples-card">
-    <h2>① 示例（可直接载入试算）</h2>
+    <h2>① 示例（可直接载入试跑）</h2>
+    <p class="hint">温区试算示例：</p>
     <div id="examples" class="examples"></div>
+    <p class="hint" style="margin-top:10px">候选树剪枝示例（载入后请到第 ④ 区发起剪枝）：</p>
+    <div id="pruning-examples" class="examples"></div>
   </section>
 
   <section class="card">
@@ -63,18 +66,47 @@
   </section>
 
   <section class="card">
-    <h2>④ 试算任务与确认</h2>
+    <h2>④ 候选树剪枝（动态规划，不穷举剪枝组合）</h2>
+    <p class="hint">
+      对第 ③ 区已保存的候选树剪枝：每个分支可保留或把整棵子树收成一个叶子（类别取自原子树叶子）；
+      锁定样品的预测必须与剪枝前一致；在叶数不超过上限的方案中取误分最少、误分相同取叶数更少的。
+    </p>
+    <div class="grid4">
+      <label>叶数上限（1～128）
+        <input id="prune-max-leaves" type="number" min="1" max="128" value="4" />
+      </label>
+    </div>
+    <p class="hint">
+      样品（1～500 条）JSON 数组，每条字段：
+      <code>temperature</code> 温度、<code>front</code> 前压、<code>back</code> 后压
+      （均为 0..65535 整数）、<code>category</code> 复验类别（非空字符串）、
+      <code>locked</code> 是否锁定现判（布尔）。
+    </p>
+    <textarea id="prune-samples" rows="10" spellcheck="false"></textarea>
+    <div class="row">
+      <button id="btn-prune" class="primary">发起剪枝</button>
+      <span id="prune-msg" class="msg"></span>
+    </div>
+    <p class="hint">
+      剪枝在后台运行，期间仍可继续保存草稿；只有启动时的版号仍有效，结果才会自动替换草稿里的候选树
+      （替换本身会使版号自增、旧温区试算过期）；版号变化、无解或计算失败时保留最新草稿并说明原因。
+    </p>
+    <div id="pruning-jobs"></div>
+  </section>
+
+  <section class="card">
+    <h2>⑤ 试算任务与确认</h2>
     <p class="hint">试算在后台运行，期间仍可继续保存草稿；每个任务绑定发起时的草稿版本，草稿一经修改（含改回原值）旧试算即过期，确认会被拒绝。</p>
     <div id="jobs"></div>
   </section>
 
   <section class="card">
-    <h2>⑤ 当前确认方案</h2>
+    <h2>⑥ 当前确认方案</h2>
     <div id="confirmation" class="confirmation">尚无确认方案，当前所有读数均由原树分流。</div>
   </section>
 
   <section class="card">
-    <h2>⑥ 读数分流查询</h2>
+    <h2>⑦ 读数分流查询</h2>
     <div class="grid3">
       <label>温度 <input id="r-temp" type="number" min="0" max="65535" value="180" /></label>
       <label>前压 <input id="r-front" type="number" min="0" max="65535" value="150" /></label>

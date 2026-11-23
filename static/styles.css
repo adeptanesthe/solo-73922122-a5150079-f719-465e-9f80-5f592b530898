@@ -85,6 +85,9 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .job .zone { color: #1d5678; font-weight: 700; }
 .job .reason { color: #4a5a6a; margin-top: 4px; }
 .job .err-text { color: #c0392b; margin-top: 4px; }
+.tree-details { margin-top: 6px; }
+.tree-details summary { cursor: pointer; color: #1d5678; font-size: 12.5px; }
+.tree-details .result { margin-top: 6px; max-height: 260px; overflow: auto; }
 .pill {
   font-size: 12px;
   padding: 1px 9px;

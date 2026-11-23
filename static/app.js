@@ -2,6 +2,7 @@
 const $ = (id) => document.getElementById(id);
 
 let pollTimers = new Map();
+let prunePollTimers = new Map();
 
 async function api(url, options = {}) {
   const resp = await fetch(url, {
@@ -59,6 +60,22 @@ async function loadExamples() {
       showMsg($("draft-msg"), `已载入「${ex.title}」，请依次保存原树、保存草稿后发起试算`, true);
     };
     box.appendChild(btn);
+  });
+
+  const pdata = await api("/api/pruning-examples");
+  const pbox = $("pruning-examples");
+  pbox.innerHTML = "";
+  pdata.examples.forEach((ex) => {
+    const btn = document.createElement("button");
+    btn.textContent = ex.title;
+    btn.onclick = () => {
+      $("candidate-tree").value = JSON.stringify(ex.candidate_tree, null, 2);
+      $("prune-max-leaves").value = ex.max_leaves;
+      $("prune-samples").value = JSON.stringify(ex.samples, null, 2);
+      showMsg($("prune-msg"),
+        `已载入「${ex.title}」，请先在第 ③ 区保存候选树，再到本区发起剪枝`, true);
+    };
+    pbox.appendChild(btn);
   });
 }
 
@@ -218,6 +235,106 @@ function renderConfirmation(state) {
     `规则：只有温区内且同时满足上述获准工况的读数使用候选树，其余读数一律使用原树。`;
 }
 
+// ---------- 候选树剪枝 ----------
+$("btn-prune").onclick = async () => {
+  try {
+    const maxLeaves = Number($("prune-max-leaves").value);
+    if (!Number.isInteger(maxLeaves)) {
+      throw new Error("叶数上限必须是整数");
+    }
+    let samples;
+    try {
+      samples = JSON.parse($("prune-samples").value);
+    } catch (err) {
+      throw new Error(`样品不是合法 JSON：${err.message}`);
+    }
+    const data = await api("/api/pruning", {
+      method: "POST",
+      body: JSON.stringify({ max_leaves: maxLeaves, samples }),
+    });
+    showMsg($("prune-msg"),
+      `剪枝已发起（任务 ${data.job_id.slice(0, 8)}…，基于 revision=${data.revision}，样品 ${data.sample_count} 条）`, true);
+    pollPruningJob(data.job_id);
+    setTimeout(renderPruningJobs, 50);
+  } catch (err) {
+    showMsg($("prune-msg"), err.message, false);
+  }
+};
+
+function pollPruningJob(jobId) {
+  if (prunePollTimers.has(jobId)) return;
+  const timer = setInterval(async () => {
+    try {
+      const data = await api(`/api/pruning/${jobId}`);
+      await renderPruningJobs();
+      if (!["pending", "running"].includes(data.job.status)) {
+        clearInterval(timer);
+        prunePollTimers.delete(jobId);
+        await refreshState();
+      }
+    } catch (err) {
+      clearInterval(timer);
+      prunePollTimers.delete(jobId);
+    }
+  }, 400);
+  prunePollTimers.set(jobId, timer);
+}
+
+async function renderPruningJobs() {
+  const state = await api("/api/state");
+  const box = $("pruning-jobs");
+  const jobs = state.pruning_jobs || [];
+  if (!jobs.length) {
+    box.innerHTML = '<p class="hint">暂无剪枝任务。</p>';
+    return;
+  }
+  box.innerHTML = '<div class="jobs"></div>';
+  const list = box.querySelector(".jobs");
+  jobs.slice().reverse().forEach((job) => {
+    const div = document.createElement("div");
+    div.className = "job";
+    const statusText = {
+      pending: "排队中", running: "剪枝中", solved: "成功",
+      no_solution: "无解", error: "失败",
+    }[job.status] || job.status;
+    let detail = "";
+    if (job.status === "solved" && job.result) {
+      const r = job.result;
+      detail =
+        `<div class="zone">叶数：${r.leaves_before} → ${r.leaves_after}` +
+        `（上限 ${r.max_leaves}）　误分样品：${r.misclass_before} → ${r.misclass_after}` +
+        `（共 ${r.sample_count} 条，锁定 ${r.locked_total} 条，违约 ${r.locked_violations}）</div>` +
+        `<div class="reason">${r.reason}</div>` +
+        `<details class="tree-details"><summary>查看剪枝后候选树 JSON</summary>` +
+        `<pre class="result">${JSON.stringify(r.pruned_tree, null, 2)}</pre></details>`;
+      if (job.applied) {
+        detail += `<div class="msg ok">已用该结果替换草稿候选树（新 revision=${job.apply_revision}），旧温区试算已过期。</div>`;
+      } else if (job.superseded) {
+        detail += `<div class="err-text">${job.apply_reason ?? "版号已变化，未替换草稿，最新草稿已保留"}</div>`;
+      }
+    } else if (job.status === "no_solution" && job.result) {
+      detail = `<div class="err-text">${job.result.reason}</div>
+                <div class="reason">草稿保持不变。</div>`;
+    } else if (job.status === "error") {
+      detail = `<div class="err-text">剪枝失败：${job.error ?? "未知错误"}；草稿保持不变。</div>`;
+    } else {
+      detail = `<div class="reason">任务进行中，请稍候…（期间仍可保存草稿）</div>`;
+    }
+    const staleTag = job.stale
+      ? '<span class="stale">版号已变化（草稿被改过）</span>'
+      : '<span class="pill">当前版本</span>';
+    div.innerHTML = `
+      <div class="job-head">
+        <span class="pill ${job.status}">${statusText}</span>
+        <span>任务 ${job.id.slice(0, 8)}…</span>
+        <span>基于 revision=${job.revision}</span>
+        <span>样品 ${job.sample_count} 条 · 上限 ${job.max_leaves} 叶</span>
+        ${staleTag}
+      </div>${detail}`;
+    list.appendChild(div);
+  });
+}
+
 // ---------- 读数查询 ----------
 $("btn-classify").onclick = async () => {
   try {
@@ -244,8 +361,10 @@ async function refreshState() {
   $("revision").textContent = state.revision;
   renderConfirmation(state);
   await renderJobs();
+  await renderPruningJobs();
 }
 
 loadExamples().catch((err) => showMsg($("draft-msg"), err.message, false));
 refreshState().catch((err) => showMsg($("draft-msg"), err.message, false));
 setInterval(renderJobs, 2000); // 轮询刷新任务状态与过期标记
+setInterval(renderPruningJobs, 2000);
